@@ -2,7 +2,8 @@
 DebateBot: Two Sides and a Judge
 AI-powered debate arena with LangGraph, Groq, and Tavily
 """
-
+import random
+from datetime import datetime
 import streamlit as st
 import os
 import json
@@ -136,14 +137,37 @@ Evaluation Criteria:
 4. Persuasiveness and clarity
 5. Use of citations and sources
 
-Provide your verdict in the following format:
-- Winner: [Pro Agent or Con Agent]
-- Final Score: [Pro X - Con Y]
-- Best Argument: [Describe the strongest argument]
-- Best Rebuttal: [Describe the strongest rebuttal]
-- Pro Strengths: [List key strengths of Pro]
-- Con Strengths: [List key strengths of Con]
-- Final Reasoning: [Provide detailed reasoning for your decision]
+IMPORTANT INSTRUCTIONS:
+1. Review the ENTIRE debate transcript before making your decision
+2. For "Best Argument", select ONE exact quote from the Pro Agent's messages that was particularly strong
+3. For "Best Rebuttal", select ONE exact quote from the Con Agent's messages that was particularly effective
+4. For "Pro Strengths", list 3-4 specific strengths based on actual arguments made
+5. For "Con Strengths", list 3-4 specific strengths based on actual arguments made
+6. Do NOT use generic phrases like "Not specified" - always extract from the actual debate
+
+Provide your verdict in EXACTLY this format:
+
+Winner:
+[Pro Agent or Con Agent]
+
+Pro Strengths:
+- [specific strength 1]
+- [specific strength 2]
+- [specific strength 3]
+
+Con Strengths:
+- [specific strength 1]
+- [specific strength 2]
+- [specific strength 3]
+
+Best Argument:
+"[exact quote from Pro Agent's message]"
+
+Best Rebuttal:
+"[exact quote from Con Agent's message]"
+
+Final Reasoning:
+[Provide detailed reasoning for your decision]
 
 Be fair, objective, and thorough in your evaluation."""
     
@@ -545,22 +569,41 @@ def get_judge_verdict() -> Dict[str, str]:
     try:
         judge_agent = create_judge_agent()
         
-        # Create message history with full debate
+        # Create message history with full debate context
+        debate_context = f"""DEBATE TOPIC: {st.session_state.topic}
+
+NUMBER OF ROUNDS: {st.session_state.num_rounds}
+
+CURRENT SCORES:
+- Pro Agent: {int(st.session_state.pro_score)}%
+- Con Agent: {int(st.session_state.con_score)}%
+
+CITATIONS USED:
+"""
+        
+        # Add citations to context
+        for i, citation in enumerate(st.session_state.citations, 1):
+            debate_context += f"\n{i}. {citation.get('source', 'Unknown')} - {citation.get('url', '')}"
+        
+        debate_context += "\n\nFULL DEBATE TRANSCRIPT:\n\n"
+        
+        # Add all debate messages with round indicators
+        for i, msg in enumerate(st.session_state.messages):
+            round_num = (i // 2) + 1
+            speaker = "Pro Agent" if i % 2 == 0 else "Con Agent"
+            debate_context += f"Round {round_num} - {speaker}:\n{msg.content}\n\n"
+        
         messages = [
-            SystemMessage(content=f"You are judging a debate on the topic: {st.session_state.topic}")
+            SystemMessage(content=debate_context)
         ]
         
-        # Add all debate messages
-        for msg in st.session_state.messages:
-            messages.append(msg)
-        
         # Add verdict request
-        messages.append(HumanMessage(content="Provide your final verdict based on the debate above."))
+        messages.append(HumanMessage(content="Provide your final verdict following the exact format specified in your instructions."))
         
         response = judge_agent.invoke({"messages": messages})
         verdict_text = response.content
         
-        # Parse verdict (simple parsing - could be improved)
+        # Parse verdict with improved parsing
         verdict = {
             'winner': 'Draw',
             'final_score': f"Pro: {int(st.session_state.pro_score)} - Con: {int(st.session_state.con_score)}",
@@ -571,16 +614,86 @@ def get_judge_verdict() -> Dict[str, str]:
             'final_reasoning': verdict_text
         }
         
-        # Try to extract structured information
+        # Parse Winner
         if 'Winner:' in verdict_text:
-            winner_line = [line for line in verdict_text.split('\n') if 'Winner:' in line]
-            if winner_line:
-                verdict['winner'] = winner_line[0].split('Winner:')[1].strip()
+            lines = verdict_text.split('\n')
+            for i, line in enumerate(lines):
+                if 'Winner:' in line:
+                    winner_text = line.split('Winner:')[1].strip()
+                    # Get next lines if winner spans multiple lines
+                    j = i + 1
+                    while j < len(lines) and lines[j].strip() and not any(marker in lines[j] for marker in ['Pro Strengths:', 'Con Strengths:', 'Best Argument:', 'Best Rebuttal:', 'Final Reasoning:']):
+                        winner_text += ' ' + lines[j].strip()
+                        j += 1
+                    verdict['winner'] = winner_text
+                    break
         
-        if 'Final Score:' in verdict_text:
-            score_line = [line for line in verdict_text.split('\n') if 'Final Score:' in line]
-            if score_line:
-                verdict['final_score'] = score_line[0].split('Final Score:')[1].strip()
+        # Parse Pro Strengths
+        if 'Pro Strengths:' in verdict_text:
+            lines = verdict_text.split('\n')
+            strengths = []
+            start_idx = next(i for i, line in enumerate(lines) if 'Pro Strengths:' in line)
+            i = start_idx + 1
+            while i < len(lines) and (lines[i].strip().startswith('-') or lines[i].strip().startswith('*')):
+                strengths.append(lines[i].strip().lstrip('-*').strip())
+                i += 1
+            if strengths:
+                verdict['pro_strengths'] = '\n'.join([f"- {s}" for s in strengths])
+        
+        # Parse Con Strengths
+        if 'Con Strengths:' in verdict_text:
+            lines = verdict_text.split('\n')
+            strengths = []
+            start_idx = next(i for i, line in enumerate(lines) if 'Con Strengths:' in line)
+            i = start_idx + 1
+            while i < len(lines) and (lines[i].strip().startswith('-') or lines[i].strip().startswith('*')):
+                strengths.append(lines[i].strip().lstrip('-*').strip())
+                i += 1
+            if strengths:
+                verdict['con_strengths'] = '\n'.join([f"- {s}" for s in strengths])
+        
+        # Parse Best Argument
+        if 'Best Argument:' in verdict_text:
+            lines = verdict_text.split('\n')
+            for i, line in enumerate(lines):
+                if 'Best Argument:' in line:
+                    arg_text = line.split('Best Argument:')[1].strip()
+                    # Remove quotes if present
+                    arg_text = arg_text.strip('"\'')
+                    # Get next lines if argument spans multiple lines
+                    j = i + 1
+                    while j < len(lines) and lines[j].strip() and not any(marker in lines[j] for marker in ['Best Rebuttal:', 'Final Reasoning:']):
+                        arg_text += ' ' + lines[j].strip()
+                        j += 1
+                    verdict['best_argument'] = arg_text.strip('"\'')
+                    break
+        
+        # Parse Best Rebuttal
+        if 'Best Rebuttal:' in verdict_text:
+            lines = verdict_text.split('\n')
+            for i, line in enumerate(lines):
+                if 'Best Rebuttal:' in line:
+                    rebuttal_text = line.split('Best Rebuttal:')[1].strip()
+                    # Remove quotes if present
+                    rebuttal_text = rebuttal_text.strip('"\'')
+                    # Get next lines if rebuttal spans multiple lines
+                    j = i + 1
+                    while j < len(lines) and lines[j].strip() and not any(marker in lines[j] for marker in ['Final Reasoning:']):
+                        rebuttal_text += ' ' + lines[j].strip()
+                        j += 1
+                    verdict['best_rebuttal'] = rebuttal_text.strip('"\'')
+                    break
+        
+        # Parse Final Reasoning
+        if 'Final Reasoning:' in verdict_text:
+            lines = verdict_text.split('\n')
+            start_idx = next(i for i, line in enumerate(lines) if 'Final Reasoning:' in line)
+            reasoning = lines[start_idx].split('Final Reasoning:')[1].strip()
+            i = start_idx + 1
+            while i < len(lines):
+                reasoning += '\n' + lines[i]
+                i += 1
+            verdict['final_reasoning'] = reasoning.strip()
         
         return verdict
     except Exception as e:
