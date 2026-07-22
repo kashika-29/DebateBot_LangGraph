@@ -58,6 +58,8 @@ An AI-powered debate arena where two AI agents battle using arguments while a Ju
 - Custom CSS animations and transitions
 - Responsive design
 
+## Live Demo:  https://debatebot-langgraph.streamlit.app
+
 ## Architecture
 
 The project uses a single-file architecture (`app.py`) with:
